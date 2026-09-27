@@ -44,6 +44,7 @@ def cancel_stale_sessions():
             log(f"[GC] Cancelling stale session {sid}", sid)
             try:
                 update_session(sid, cancel=True, status="done")
+                _complete_session(sid)
             except Exception as inner:
                 log(f"[GC] Failed to cancel {sid}: {inner}")
     except Exception as e:
@@ -67,6 +68,28 @@ def _save_elapsed(sid):
     if s and s.get("created_at"):
         elapsed = (datetime.utcnow() - datetime.fromisoformat(s["created_at"])).total_seconds()
         update_session(sid, elapsed_seconds=round(elapsed, 1))
+
+
+def _complete_session(sid, cancel=None):
+    """Mark a session done and record elapsed. Session rows are kept indefinitely."""
+    _save_elapsed(sid)
+    kwargs = {"status": "done"}
+    if cancel is not None:
+        kwargs["cancel"] = cancel
+    update_session(sid, **kwargs)
+
+
+def _save_session_geo(sid, ip):
+    """Resolve IP geolocation in the background and attach it to the session."""
+    try:
+        from db import _resolve_ip_sync, update_session as _db_update
+        loc = _resolve_ip_sync(ip)
+        if not (loc or {}).get("country"):
+            return
+        _db_update(sid, user_country=loc.get("country", ""),
+                   user_city=loc.get("city", ""), user_region=loc.get("region", ""))
+    except Exception:
+        pass
 
 
 def _harvest_companies(jobs: list):
@@ -161,8 +184,7 @@ def _scrape_combos(sid, combos, keywords=None, internship_mode=False, hours_old=
         if sid and _is_cancelled(sid):
             log(f"[SCRAPE] Cancelled by user", sid)
             set_raw_jobs(sid, all_jobs)
-            _save_elapsed(sid)
-            update_session(sid, status="done")
+            _complete_session(sid)
             return all_jobs, seen
 
         module_name, func_name = SITE_MAP.get(site_key, (None, None))
@@ -398,11 +420,14 @@ def _scrape_combos(sid, combos, keywords=None, internship_mode=False, hours_old=
 def run_scrape(sid, sites, roles, location, indeed_country,
                keywords=None, internship_mode=False, user_email="", resume_filename="", resume_text="",
                scrape_limit=200, hours_old=168, city="", state="", country="",
-               combos=None, initial_jobs=None):
+               combos=None, initial_jobs=None, client_ip=""):
     from db import set_raw_jobs as _set_raw
 
-    create_session(sid, sites=sites, keywords=keywords or [], roles=roles or [], user_email=user_email,
-                   location=location or "", internship_mode=internship_mode)
+    create_session(sid, sites=sites, keywords=keywords or [], roles=roles or [],
+                   keywords_count=len(keywords or []), roles_count=len(roles or []),
+                   user_email=user_email,
+                   location=location or "", internship_mode=internship_mode,
+                   ip_address=client_ip or "")
     from db import get_user as _get_user
     session_resume = resume_filename or ""
     if not session_resume and user_email:
@@ -410,6 +435,8 @@ def run_scrape(sid, sites, roles, location, indeed_country,
         session_resume = (u or {}).get("resume_filename") or ""
     update_session(sid, status="running", cancel=False, resume_filename=session_resume)
     _save_resume_text(sid, resume_text)
+    if client_ip:
+        threading.Thread(target=_save_session_geo, args=(sid, client_ip), daemon=True).start()
 
     if combos is None:
         combos = [
@@ -435,8 +462,7 @@ def run_scrape(sid, sites, roles, location, indeed_country,
     if not combos:
         # Pure cache-hit session — nothing left to scrape.
         update_session(sid, scraped=len(all_jobs))
-        _save_elapsed(sid)
-        update_session(sid, status="done")
+        _complete_session(sid)
         log(f"[SCRAPE] Cache-only session complete — {len(all_jobs)} jobs", sid)
         if not all_jobs:
             _set_raw(sid, [])
@@ -450,8 +476,7 @@ def run_scrape(sid, sites, roles, location, indeed_country,
     log(f"[SCRAPE] Pipeline complete — {len(all_jobs)} total jobs", sid)
     _harvest_companies(all_jobs)
     update_session(sid, scraped=len(all_jobs))
-    _save_elapsed(sid)
-    update_session(sid, status="done")
+    _complete_session(sid)
 
     if not all_jobs:
         _set_raw(sid, [])
@@ -466,8 +491,7 @@ def _run_scrape_guarded(sid: str, *args, **kwargs):
         log(f"[SCRAPE] Pipeline error: {e}", sid)
     finally:
         try:
-            _save_elapsed(sid)
-            update_session(sid, status="done")
+            _complete_session(sid)
         except Exception:
             pass
 
@@ -505,7 +529,7 @@ def _cache_lookup(req):
 
     Returns (combos_to_scrape, initial_jobs, served_cache)."""
     from config import CACHE_ENABLED, CACHE_TTL_HOURS, CACHE_MIN_VOLUME
-    from db import get_cache_entry, get_cached_jobs_aggregate, upsert_prewarm_combo, upsert_custom_prewarm, increment_combo_usage
+    from db import get_cache_entry, get_cached_jobs_aggregate, upsert_prewarm_combo, upsert_custom_prewarm, increment_combo_usage, increment_custom_prewarm_usage
 
     combos_to_scrape = []
     initial_jobs = []
@@ -586,6 +610,12 @@ def _cache_lookup(req):
                     role, site, "", req.state, req.country,
                     req.internship_mode, req.hours_old,
                 )
+                if not _is_config_combo(role, site, "", req.state, req.country,
+                                        req.internship_mode, req.hours_old):
+                    increment_custom_prewarm_usage(
+                        role, site, "", req.state, req.country,
+                        req.internship_mode, req.hours_old,
+                    )
                 if status in ("fresh", "stale"):
                     for j in (entry.get("jobs") or []):
                         initial_jobs.append(j)
@@ -618,6 +648,12 @@ def _cache_lookup(req):
                 role, site, req.city or "", req.state or "", req.country or "",
                 req.internship_mode, req.hours_old,
             )
+            if not _is_config_combo(role, site, req.city or "", req.state or "",
+                                    req.country or "", req.internship_mode, req.hours_old):
+                increment_custom_prewarm_usage(
+                    role, site, req.city or "", req.state or "", req.country or "",
+                    req.internship_mode, req.hours_old,
+                )
             if status in ("fresh", "stale"):
                 for j in (entry.get("jobs") or []):
                     initial_jobs.append(j)
@@ -1009,7 +1045,7 @@ async def trigger_scrape(req: ScrapeRequest, request: Request = None):
             user_email=req.user_email, resume_filename=req.resume_filename,
             resume_text=req.resume_text, scrape_limit=req.scrape_limit,
             hours_old=req.hours_old, city=req.city, state=req.state, country=req.country,
-            combos=[], initial_jobs=initial_jobs,
+            combos=[], initial_jobs=initial_jobs, client_ip=client_ip,
         )
         return {"message": "Served from cache", "status": "done"}
 
@@ -1026,6 +1062,7 @@ async def trigger_scrape(req: ScrapeRequest, request: Request = None):
         "city": req.city, "state": req.state, "country": req.country,
         "combos": combos_to_scrape,
         "initial_jobs": initial_jobs,
+        "client_ip": client_ip,
     }, daemon=True)
     t.start()
     return {"message": "Scrape started", "status": "running"}

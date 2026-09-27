@@ -538,6 +538,7 @@ tr.clickable:hover td { background: #f8fafc; }
         <span class="tab" data-tab="roles" onclick="switchTab('roles','db')">Roles</span>
         <span class="tab" data-tab="referrals" onclick="switchTab('referrals','db')">Referrals</span>
         <span class="tab" data-tab="uploads" onclick="switchTab('uploads','db')">Uploads</span>
+        <span class="tab" data-tab="prewarm" onclick="switchTab('prewarm','db')">Prewarm</span>
       </div>
 
       <div class="tab-content active" data-group="db" data-tab="cache">
@@ -630,6 +631,41 @@ tr.clickable:hover td { background: #f8fafc; }
           </div>
         </div>
         <div id="resumeFileList" style="margin-top:16px;font-size:13px;font-family:'JetBrains Mono', monospace;color:var(--text-muted);max-height:120px;overflow-y:auto;background:var(--bg-body);border-radius:8px;padding:8px;"></div>
+      </div>
+    </div>
+
+    <div class="tab-content" data-group="db" data-tab="prewarm">
+      <div class="chart-box db-card" style="max-width:100%">
+        <h3>Add Custom Prewarm Combo</h3>
+        <div class="db-actions" style="gap:12px;align-items:flex-end;flex-wrap:wrap">
+          <input id="pwRole" type="text" list="pwRoleList" placeholder="Role (e.g. software engineer)" autocomplete="off" style="width:220px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;font-size:14px;box-sizing:border-box">
+          <datalist id="pwRoleList"></datalist>
+          <select id="pwSite" style="width:130px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;font-size:14px;background:var(--bg-body)">
+            <option value="indeed">indeed</option>
+            <option value="linkedin">linkedin</option>
+            <option value="naukri">naukri</option>
+          </select>
+          <input id="pwState" type="text" placeholder="State" autocomplete="off" style="width:120px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;font-size:14px;box-sizing:border-box">
+          <input id="pwCity" type="text" placeholder="City" autocomplete="off" style="width:120px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;font-size:14px;box-sizing:border-box">
+          <input id="pwCountry" type="text" placeholder="Country" autocomplete="off" style="width:110px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;font-size:14px;box-sizing:border-box">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--text);cursor:pointer">
+            <input type="checkbox" id="pwInternship" style="width:auto"> Internship
+          </label>
+          <input id="pwHours" type="number" value="168" min="1" step="1" placeholder="Hours" title="Freshness window" style="width:80px;padding:10px 12px;border:1px solid var(--border-light);border-radius:8px;font-size:14px;box-sizing:border-box">
+          <button class="btn btn-primary" onclick="addPrewarmCombo()">+ Add</button>
+        </div>
+        <span class="db-result" id="pwAddResult"></span>
+        <p style="margin:12px 0 0;font-size:13px;color:var(--text-muted)">Custom combos are user-searched and worker-generated combos the scheduler prewarms on every pass. Delete a combo to stop prewarming it.</p>
+      </div>
+
+      <div class="chart-box db-card" style="max-width:100%;margin-top:24px">
+        <h3>Custom Prewarm Combos <span id="pwCustomCount" style="font-weight:500;font-size:13px;color:var(--text-muted)"></span></h3>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th>Role</th><th>Site</th><th>State / City</th><th>Mode</th><th>Hours</th><th style="text-align:center">Usage</th><th>Last Used</th><th>Created</th><th style="text-align:center">Actions</th>
+          </tr></thead>
+          <tbody id="pwCustomBody"></tbody>
+        </table></div>
       </div>
     </div>
   </div>

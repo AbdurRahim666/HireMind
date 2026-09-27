@@ -678,7 +678,7 @@ async def admin_db_merge(file: UploadFile = File(...), user: dict = Depends(get_
                 "jobs": ["session_id","title","company","location","url","description","tags","ai_score","keyword_score","total_score","reason","salary","experience_level","is_raw","created_at"],
                 "events": ["session_id","event","data","elapsed_seconds","created_at"],
                 "leads": ["session_id","email","name","roles","location","keywords","internship_mode","resume_snippet","source","created_at"],
-                "visits": ["visit_id","ip_address","user_agent","device_type","referer","path","session_id","user_email","duration_seconds","heartbeats","country","city","region","created_at","last_heartbeat"],
+                "visits": ["visit_id","ip_address","user_agent","device_type","referer","path","session_id","user_email","duration_seconds","heartbeats","country","country_code","city","region","created_at","last_heartbeat"],
                 "saved_jobs": ["user_email","title","company","url","location","salary","total_score","ai_score","keyword_score","reason","experience_level","tags","site","application_status","saved_at","updated_at"],
                 "referral_requests": ["from_email","to_email","job_url","job_title","company","match_score","message","status","credit_awarded","accepted_at","receiver_confirmed","sender_confirmed","created_at","updated_at"],
                 "custom_companies": ["name","created_at"],
@@ -786,6 +786,70 @@ async def delete_custom_prewarm(
     from db import remove_custom_prewarm
     removed = remove_custom_prewarm(role, site, city, state, country, internship_mode, hours_old)
     return {"ok": removed}
+
+
+# ── Prewarm queue CRUD ──
+
+
+class PrewarmComboRequest(BaseModel):
+    role: str = ""
+    site: str = ""
+    city: str = ""
+    state: str = ""
+    country: str = ""
+    internship_mode: bool = False
+    hours_old: int = 168
+    priority: int = 0
+    source: str = "admin"
+
+
+@router.get("/prewarm/queue")
+async def get_prewarm_queue(
+    source: str = "", search: str = "", limit: int = 2000, include_disabled: bool = False,
+):
+    from db import get_prewarm_queue as db_get_prewarm_queue
+    combos = db_get_prewarm_queue(
+        limit=limit, source=source or "", search=search or "", include_disabled=include_disabled,
+    )
+    return {"combos": combos}
+
+
+@router.post("/prewarm/queue")
+async def add_prewarm_queue(req: PrewarmComboRequest):
+    if not req.role.strip() or not req.site.strip():
+        return {"ok": False, "error": "role and site are required"}
+    from db import add_prewarm_combo
+    add_prewarm_combo(
+        req.role.strip(), req.site.strip(), req.city, req.state, req.country,
+        int(req.internship_mode), req.hours_old, req.priority, req.source or "admin",
+    )
+    return {"ok": True}
+
+
+@router.put("/prewarm/queue/{combo_id}")
+async def update_prewarm_queue(combo_id: int, req: PrewarmComboRequest):
+    from db import set_prewarm_queue_priority
+    updated = set_prewarm_queue_priority(combo_id, req.priority)
+    return {"ok": updated}
+
+
+@router.delete("/prewarm/queue/{combo_id}")
+async def delete_prewarm_queue(combo_id: int):
+    from db import delete_prewarm_combo_by_id
+    deleted = delete_prewarm_combo_by_id(combo_id)
+    return {"ok": deleted}
+
+
+@router.post("/prewarm/custom")
+async def add_custom_prewarm(req: PrewarmComboRequest):
+    if not req.role.strip() or not req.site.strip():
+        return {"ok": False, "error": "role and site are required"}
+    from db import upsert_custom_prewarm
+    upsert_custom_prewarm(
+        req.role.strip(), req.site.strip(), req.city, req.state, req.country,
+        int(req.internship_mode), req.hours_old,
+    )
+    return {"ok": True}
 
 
 # ── Server Stats ──

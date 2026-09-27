@@ -1,5 +1,10 @@
 # Oracle Cloud Deployment Commands
 
+> **Use `DEPLOYMENT_RUNBOOK.md` for real deploys.** This file keeps old one-off commands for reference.
+> Two things here are STALE on the current prod container (see runbook):
+> - `config.py` is **NOT bind-mounted** anymore — it lives in the image layer. Never overwrite it.
+> - Never `docker rm`/recreate `job-agent` — it drops off `appnet` and nginx 502s.
+
 ## Prerequisites
 - SSH key at `%USERPROFILE%\.ssh\oracle.key`
 - Instance IP: `130.210.34.176`
@@ -24,13 +29,15 @@ ssh -i $KEY $HOST
 # Single file
 scp -i $KEY backend/match_engine/resume_data.py $HOST:/home/ubuntu/job-agent/backend/match_engine/resume_data.py
 
-# Single file (config - bind mounted so only host copy matters)
+# NOTE: config.py is BAKED into the image on prod (not bind-mounted). If you scp a copy to the
+# host it does NOT affect the running app; do not docker cp it over the container config.
 scp -i $KEY backend/config.py $HOST:/home/ubuntu/job-agent/backend/config.py
 ```
 
 ## Copy files into running container
 
-> Files baked into the Docker image need `docker cp`. Bind-mounted files (like `config.py`) update instantly.
+> All app code is baked into the image layer. Update files with `docker cp`, then `docker restart`.
+> The host copy under `/home/ubuntu/job-agent/backend/` is a staging/reference copy only.
 
 ```powershell
 # Copy file into container
@@ -99,6 +106,11 @@ ssh -i $KEY $HOST "sudo docker logs job-agent --tail 20 2>&1"
 ```
 
 ## Notes
-- `config.py` is **bind-mounted** from host — edits on host reflect immediately, no container restart needed for config changes
-- `resume_data.py` is **baked into image** — requires `docker cp` + restart
+- `config.py` is **baked into the image** on the current prod container — a host copy at
+  `/home/ubuntu/job-agent/backend/config.py` is a reference only and is NOT mounted. Never
+  `docker cp` config over it; protect it like a secret.
+- `job_agent.db` and data dirs (`resumes/`, `emails/`, `auto_apply/`, `cover_letters/`) live
+  inside the container layer — never overwrite them in a deploy.
+- `nginx.conf` IS bind-mounted from `/home/ubuntu/job-agent/nginx.conf` → edit + `nginx -s reload`.
+- Container must stay attached to `appnet` — `docker restart` is safe; `docker rm`/recreate is not.
 - Idle prevention cron runs `curl -s http://localhost:7860/health` every 5 min to prevent Oracle from reclaiming the instance

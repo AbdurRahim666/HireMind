@@ -234,12 +234,19 @@
   <section class="py-12 bg-white border-y border-slate-200/60">
     <div class="max-w-7xl mx-auto px-6">
       <p class="text-center text-sm font-bold text-slate-400 uppercase tracking-widest mb-8">Trusted by professionals at</p>
-      <div class="flex flex-wrap justify-center items-center gap-x-12 gap-y-8 opacity-60 grayscale hover:grayscale-0 transition-all duration-500">
-        <!-- Using text placeholders styled nicely as logos -->
+      <div id="trusted-companies" class="flex flex-wrap justify-center items-center gap-x-12 gap-y-8 opacity-90 transition-all duration-500">
+        <!-- Static fallback (server-rendered, replaced live with real user companies) -->
         <div class="flex items-center gap-2 text-xl font-black text-slate-700"><div class="w-8 h-8 bg-blue-600 text-white rounded flex items-center justify-center text-xs">CO</div> Cognizant</div>
         <div class="flex items-center gap-2 text-xl font-black text-slate-700"><div class="w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center text-xs">W</div> WPP Media</div>
         <div class="flex items-center gap-2 text-xl font-black text-slate-700"><div class="w-8 h-8 bg-sky-600 text-white rounded flex items-center justify-center text-xs">TC</div> TCS</div>
       </div>
+    </div>
+  </section>
+
+  <section class="py-8 bg-white">
+    <div class="max-w-7xl mx-auto px-6">
+      <p id="countries-used-label" class="text-center text-sm font-bold text-slate-400 uppercase tracking-widest mb-8">Used by professionals around the world</p>
+      <div id="countries-used" class="flex flex-wrap justify-center items-center gap-3"></div>
     </div>
   </section>
 
@@ -568,6 +575,95 @@
     });
   </script>
   <script src="/js/terms.js"></script>
+  <script>
+    (function () {
+      var box = document.getElementById('countries-used');
+      var label = document.getElementById('countries-used-label');
+      if (!box) return;
+      fetch('/api/countries-used')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var list = (data && data.countries) || [];
+          if (!list.length) return;
+          list.forEach(function (c) {
+            var name = (c.country || '').trim();
+            var chip = document.createElement('div');
+            chip.className = 'flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-1.5 shadow-sm';
+            var flag = document.createElement('img');
+            flag.width = 20; flag.height = 14;
+            flag.className = 'w-5 h-3.5 object-cover rounded-sm';
+            flag.alt = name + ' flag';
+            flag.loading = 'lazy';
+            if (c.code) {
+              flag.src = 'https://flagcdn.com/w40/' + c.code.toLowerCase() + '.png';
+              chip.appendChild(flag);
+            }
+            var txt = document.createElement('span');
+            txt.className = 'text-sm font-semibold text-slate-700';
+            txt.textContent = name;
+            chip.appendChild(txt);
+            box.appendChild(chip);
+          });
+          if (label && list.length) {
+            label.textContent = 'Used by professionals in ' + list.length + ' countries';
+          }
+        })
+        .catch(function () {});
+    })();
+  </script>
+  <script>
+    (function () {
+      var box = document.getElementById('trusted-companies');
+      if (!box) return;
+      var PALETTE = ['bg-blue-600', 'bg-indigo-600', 'bg-sky-600', 'bg-teal-600', 'bg-emerald-600', 'bg-amber-600', 'bg-rose-600', 'bg-violet-600'];
+      var MAP = {
+        'cognizant':                        { name: 'Cognizant',   color: 'bg-blue-600',  tile: 'CO' },
+        'wpp media':                        { name: 'WPP Media',   color: 'bg-red-600',   tile: 'W' },
+        'tata consultancy services (tcs)':  { name: 'TCS',         color: 'bg-sky-600',   tile: 'TC' },
+        'capgemini':                        { name: 'Capgemini',   color: 'bg-teal-600',  tile: 'CA' }
+      };
+      function hash(s) {
+        var h = 0;
+        for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; }
+        return h;
+      }
+      function titleCase(s) {
+        return s.replace(/\b\w/g, function (m) { return m.toUpperCase(); });
+      }
+      function initials(name) {
+        var words = name.trim().split(/\s+/).filter(Boolean);
+        if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+        return (name.trim().slice(0, 2) || '').toUpperCase();
+      }
+      fetch('/api/users/referrer-directory?limit=8')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var list = (data && data.companies) || [];
+          if (!list.length) return;
+          box.innerHTML = '';
+          list.forEach(function (c) {
+            var raw = (c.company || '').trim();
+            if (!raw) return;
+            var key = raw.toLowerCase();
+            var meta = MAP[key] || { name: titleCase(raw), color: PALETTE[hash(key) % PALETTE.length], tile: initials(raw) };
+            var item = document.createElement('div');
+            item.className = 'flex items-center gap-2 text-xl font-black text-slate-700';
+            var n = c.referrer_count || 1;
+            item.title = n + ' professional' + (n === 1 ? '' : 's') + ' at ' + raw;
+            var tile = document.createElement('div');
+            tile.className = 'w-8 h-8 ' + meta.color + ' text-white rounded flex items-center justify-center text-xs';
+            tile.textContent = meta.tile;
+            item.appendChild(tile);
+            item.appendChild(document.createTextNode(' '));
+            var nameEl = document.createElement('span');
+            nameEl.textContent = meta.name;
+            item.appendChild(nameEl);
+            box.appendChild(item);
+          });
+        })
+        .catch(function () {});
+    })();
+  </script>
   <script src="/js/track.js"></script>
 </body>
 </html>

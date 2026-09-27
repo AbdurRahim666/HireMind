@@ -1039,6 +1039,90 @@ async function confirmRoleDelete() {
   }
 }
 
+// ── Prewarm ──
+function pwStateLabel(r) {
+  const parts = [r.state, r.city].filter(Boolean);
+  return parts.length ? parts.join(" / ") : (r.country || "—");
+}
+
+function pwMode(r) {
+  return r.internship_mode ? '<span class="mode-badge mode-internship">internship</span>' : '<span class="mode-badge mode-normal">normal</span>';
+}
+
+async function loadPrewarm() {
+  try {
+    const c = await adminApi("/api/admin/prewarm/custom", { cache: "no-cache" });
+    const cd = c ? await c.json() : { combos: [] };
+    renderCustomCombos(cd.combos || []);
+    const roles = [...new Set((cd.combos || []).map(r => r.role))];
+    document.getElementById("pwRoleList").innerHTML = roles.map(r => `<option value="${_esc(r)}"></option>`).join("");
+  } catch {}
+}
+
+function renderCustomCombos(rows) {
+  document.getElementById("pwCustomCount").textContent = rows.length ? `(${rows.length})` : "";
+  document.getElementById("pwCustomBody").innerHTML = rows.map(x => {
+    return `<tr>
+      <td>${_esc(x.role)}</td>
+      <td style="font-family:monospace">${_esc(x.site)}</td>
+      <td>${pwStateLabel(x)}</td>
+      <td>${pwMode(x)}</td>
+      <td>${x.hours_old || 168}</td>
+      <td style="text-align:center">${x.usage_count || 0}</td>
+      <td style="white-space:nowrap">${x.last_used_at ? formatRelative(x.last_used_at) : "—"}</td>
+      <td style="white-space:nowrap">${x.created_at ? formatDate(x.created_at) : "—"}</td>
+      <td style="text-align:center"><button class="pill-btn" data-action="delcustom" data-role="${_esc(x.role)}" data-site="${_esc(x.site)}" data-state="${_esc(x.state || "")}" data-city="${_esc(x.city || "")}" data-country="${_esc(x.country || "")}" data-mode="${x.internship_mode ? 1 : 0}" data-hours="${x.hours_old || 168}" style="color:#dc2626;border-color:#fecaca">Delete</button></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="9" style="text-align:center;color:var(--text-muted)">No custom combos</td></tr>`;
+}
+
+function _setPwResult(msg, isErr) {
+  const el = document.getElementById("pwAddResult");
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = isErr ? "#dc2626" : "#16a34a";
+  setTimeout(() => { el.textContent = ""; }, 3000);
+}
+
+async function addPrewarmCombo() {
+  const role = document.getElementById("pwRole").value.trim();
+  const site = document.getElementById("pwSite").value.trim();
+  if (!role || !site) { _setPwResult("Role and site are required", true); return; }
+  const body = {
+    role, site,
+    state: document.getElementById("pwState").value.trim(),
+    city: document.getElementById("pwCity").value.trim(),
+    country: document.getElementById("pwCountry").value.trim(),
+    internship_mode: document.getElementById("pwInternship").checked,
+    hours_old: Number(document.getElementById("pwHours").value) || 168,
+  };
+  try {
+    const r = await adminApi("/api/admin/prewarm/custom", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r) return;
+    const d = await r.json();
+    if (!d.ok) { _setPwResult(d.error || "Failed to add", true); return; }
+    document.getElementById("pwState").value = "";
+    document.getElementById("pwCity").value = "";
+    document.getElementById("pwCountry").value = "";
+    _setPwResult("Combo added", false);
+    loadPrewarm();
+  } catch { _setPwResult("Network error", true); }
+}
+
+async function deleteCustomCombo(btn) {
+  if (!confirm(`Remove custom combo "${btn.dataset.role}" @ ${btn.dataset.site}?`)) return;
+  const q = [];
+  for (const k of ["role", "site", "city", "state", "country"]) q.push(`${k}=${encodeURIComponent(btn.dataset[k] || "")}`);
+  q.push(`internship_mode=${btn.dataset.mode === "1" ? "true" : "false"}`);
+  q.push(`hours_old=${btn.dataset.hours || 168}`);
+  try {
+    const r = await adminApi(`/api/admin/prewarm/custom?${q.join("&")}`, { method: "DELETE" });
+    if (!r) return;
+    const d = await r.json();
+    if (d.ok) loadPrewarm();
+  } catch {}
+}
+
 // ── Tabs ──
 function switchTab(name, group = "main") {
   document.querySelectorAll(`.tabs[data-group="${group}"] .tab`).forEach(t => t.classList.toggle("active", t.dataset.tab === name));
@@ -1281,6 +1365,8 @@ window.saveRole = saveRole;
 window.openRoleDelete = openRoleDelete;
 window.closeRoleDelete = closeRoleDelete;
 window.confirmRoleDelete = confirmRoleDelete;
+window.loadPrewarm = loadPrewarm;
+window.addPrewarmCombo = addPrewarmCombo;
 window.loadCacheStats = loadCacheStats;
 window.toggleCacheUsed = toggleCacheUsed;
 window.loadServerStats = loadServerStats;
@@ -1294,7 +1380,7 @@ window.downloadBackup = downloadBackup;
 // ── Init ──
 // The first admin API call decides the page: 200 = dashboard, 401/403 =
 // not-found (no admin hints). Admins sign in through the main app first.
-document.getElementById("rolesBody").addEventListener("click", (e) => {
+document.getElementById("rolesBody")?.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
   const id = Number(btn.dataset.id);
@@ -1302,6 +1388,10 @@ document.getElementById("rolesBody").addEventListener("click", (e) => {
   const role = _roleRows.find(x => x.id === id);
   if (btn.dataset.action === "edit") openRoleModal(role || null);
   else if (btn.dataset.action === "delete") openRoleDelete(id, role ? role.name : name);
+});
+document.getElementById("pwCustomBody")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action='delcustom']");
+  if (btn) deleteCustomCombo(btn);
 });
 loadStats();
 loadSessions();
@@ -1313,4 +1403,5 @@ loadCacheStats();
 loadRoles();
 loadServerStats();
 loadDbReferrals();
+loadPrewarm();
 startRefresh();

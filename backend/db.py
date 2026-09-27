@@ -49,7 +49,11 @@ def init_db():
             resume_length INTEGER DEFAULT 0,
             scraped INTEGER DEFAULT 0,
             elapsed_seconds REAL DEFAULT 0,
-            location TEXT DEFAULT ''
+            location TEXT DEFAULT '',
+            ip_address TEXT DEFAULT '',
+            user_country TEXT DEFAULT '',
+            user_city TEXT DEFAULT '',
+            user_region TEXT DEFAULT ''
         );
             CREATE TABLE IF NOT EXISTS jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,12 +146,14 @@ def init_db():
                 duration_seconds REAL DEFAULT 0,
                 heartbeats      INTEGER DEFAULT 0,
                 country         TEXT DEFAULT '',
+                country_code    TEXT DEFAULT '',
                 city            TEXT DEFAULT '',
                 region          TEXT DEFAULT '',
                 created_at      TEXT NOT NULL,
                 last_heartbeat  TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_visits_ip ON visits(ip_address);
+            CREATE INDEX IF NOT EXISTS idx_visits_country ON visits(country);
             CREATE TABLE IF NOT EXISTS saved_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_email TEXT NOT NULL,
@@ -344,6 +350,27 @@ def init_db():
                 cur.execute(f"ALTER TABLE custom_prewarm ADD COLUMN {col}")
             except Exception:
                 pass
+        # Migrate prewarm_queue — add soft-delete flag if missing
+        try:
+            cur.execute("ALTER TABLE prewarm_queue ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+        # Migrate sessions — add IP / geo capture columns if missing
+        for col in ("ip_address TEXT DEFAULT ''", "user_country TEXT DEFAULT ''",
+                    "user_city TEXT DEFAULT ''", "user_region TEXT DEFAULT ''"):
+            try:
+                cur.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+            except Exception:
+                pass
+        # Migrate visits — add ISO-2 country code column for flags
+        try:
+            cur.execute("ALTER TABLE visits ADD COLUMN country_code TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_visits_country ON visits(country)")
+        except Exception:
+            pass
         # Migrate job_cache — add usage columns if missing
         for col in ("usage_count INTEGER DEFAULT 0", "last_used_at TEXT DEFAULT ''"):
             try:
@@ -578,13 +605,23 @@ def init_db():
         conn.commit()
 
 
+# ── Session Housekeeping ──
+
+
 def gc_sessions(max_age_minutes: int = 259200):
+    """Housekeeping pass. Session rows are kept forever; only purge the bulk data
+    (jobs + events) belonging to stale sessions once they pass the cutoff."""
     with _write_lock:
         with _get_conn() as (conn, cur):
             cutoff = (datetime.utcnow() - timedelta(minutes=max_age_minutes)).isoformat()
-            cur.execute("DELETE FROM sessions WHERE updated_at < ?", (cutoff,))
-            cur.execute("DELETE FROM jobs WHERE session_id NOT IN (SELECT id FROM sessions)")
-            cur.execute("DELETE FROM events WHERE session_id NOT IN (SELECT id FROM sessions)")
+            cur.execute(
+                "DELETE FROM jobs WHERE session_id IN (SELECT id FROM sessions WHERE updated_at < ?)",
+                (cutoff,),
+            )
+            cur.execute(
+                "DELETE FROM events WHERE session_id IN (SELECT id FROM sessions WHERE updated_at < ?)",
+                (cutoff,),
+            )
             conn.commit()
 
 
@@ -904,12 +941,28 @@ def touch_prewarm_combo(role: str, site: str, city: str, state: str, country: st
             conn.commit()
 
 
-def get_prewarm_queue(limit: int = 100000) -> list:
-    """All queue combos, ordered priority first, then least-recently refreshed."""
+def get_prewarm_queue(limit: int = 100000, source: str = "", search: str = "",
+                      include_disabled: bool = False) -> list:
+    """All queue combos, ordered priority first, then least-recently refreshed.
+    Optional filters: source (exact match), search (role substring).
+    Disabled combos are hidden unless include_disabled=True."""
+    clauses = []
+    params = []
+    if not include_disabled:
+        clauses.append("disabled = 0")
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
+    if search:
+        clauses.append("role LIKE ?")
+        params.append(f"%{search}%")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
     with _get_conn() as (conn, cur):
         cur.execute(
-            "SELECT * FROM prewarm_queue ORDER BY priority DESC, last_refreshed_at ASC, id ASC LIMIT ?",
-            (limit,),
+            f"SELECT * FROM prewarm_queue{where} "
+            "ORDER BY priority DESC, last_refreshed_at ASC, id ASC LIMIT ?",
+            params,
         )
         rows = cur.fetchall()
     result = []
@@ -918,6 +971,49 @@ def get_prewarm_queue(limit: int = 100000) -> list:
         d["internship_mode"] = bool(d["internship_mode"])
         result.append(d)
     return result
+
+
+def add_prewarm_combo(role: str, site: str, city: str, state: str, country: str,
+                      internship_mode: int, hours_old: int = 168,
+                      priority: int = 0, source: str = "admin") -> bool:
+    """Add a combo to the prewarm queue with an explicit priority (admin-managed).
+    Upserts on the full key and re-enables the combo (clears soft-delete)."""
+    now = _now()
+    key = _prewarm_key(role, site, city, state, country, internship_mode, hours_old)
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            cur.execute(
+                """INSERT INTO prewarm_queue
+                   (role, site, city, state, country, internship_mode, hours_old, source, priority, disabled, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                   ON CONFLICT(role, site, city, state, country, internship_mode, hours_old)
+                   DO UPDATE SET source = excluded.source, priority = excluded.priority, disabled = 0""",
+                key + (source, priority, now),
+            )
+            conn.commit()
+    return True
+
+
+def set_prewarm_queue_priority(prewarm_id: int, priority: int) -> bool:
+    """Set a combo's priority (higher = warmed sooner) and re-enable it."""
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            cur.execute(
+                "UPDATE prewarm_queue SET priority = ?, disabled = 0 WHERE id = ?",
+                (int(priority), int(prewarm_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+
+def delete_prewarm_combo_by_id(prewarm_id: int) -> bool:
+    """Soft-delete a combo (disabled=1) so the config grid can't resurrect it.
+    It stays visible via get_prewarm_queue(include_disabled=True)."""
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            cur.execute("UPDATE prewarm_queue SET disabled = 1 WHERE id = ?", (int(prewarm_id),))
+            conn.commit()
+            return cur.rowcount > 0
 
 
 # ── Custom Prewarm (persistent user-searched combos) ──
@@ -935,7 +1031,7 @@ def upsert_custom_prewarm(role: str, site: str, city: str, state: str, country: 
                    (role, site, city, state, country, internship_mode, hours_old, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(role, site, city, state, country, internship_mode, hours_old)
-                   DO NOTHING""",
+                   DO UPDATE SET created_at = excluded.created_at""",
                 key + (now,),
             )
             conn.commit()
@@ -991,12 +1087,16 @@ def get_custom_prewarm() -> list:
     return result
 
 
-def gc_custom_prewarm(max_age_days: int = 14) -> None:
-    """Delete custom prewarm combos older than max_age_days."""
+def gc_custom_prewarm(max_age_days: int = 30) -> None:
+    """Delete custom prewarm combos older than max_age_days unless they've been
+    searched often enough (usage_count >= 5) to be considered proven demand."""
     with _write_lock:
         with _get_conn() as (conn, cur):
             cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
-            cur.execute("DELETE FROM custom_prewarm WHERE created_at < ?", (cutoff,))
+            cur.execute(
+                "DELETE FROM custom_prewarm WHERE created_at < ? AND usage_count < 5",
+                (cutoff,),
+            )
             conn.commit()
 
 
@@ -1036,17 +1136,19 @@ def create_session(sid: str, **kwargs):
                 "internship_mode": 1 if kwargs.get("internship_mode") else 0,
                 "location": kwargs.get("location", ""),
                 "user_email": kwargs.get("user_email", ""),
+                "ip_address": kwargs.get("ip_address", ""),
             }
             cur.execute("""INSERT OR REPLACE INTO sessions
-                (id, created_at, updated_at, sites, keywords, roles, keywords_count, roles_count, resume_length, internship_mode, location, user_email)
-                VALUES (:id, :created_at, :updated_at, :sites, :keywords, :roles, :keywords_count, :roles_count, :resume_length, :internship_mode, :location, :user_email)""", fields)
+                (id, created_at, updated_at, sites, keywords, roles, keywords_count, roles_count, resume_length, internship_mode, location, user_email, ip_address)
+                VALUES (:id, :created_at, :updated_at, :sites, :keywords, :roles, :keywords_count, :roles_count, :resume_length, :internship_mode, :location, :user_email, :ip_address)""", fields)
             conn.commit()
 
 
 def update_session(sid: str, **kwargs):
     with _write_lock:
         with _get_conn() as (conn, cur):
-            allowed = {"status", "pass_num", "max_passes", "filtered_gen", "cancel", "queue_position", "scraped", "elapsed_seconds", "resume_filename", "location"}
+            allowed = {"status", "pass_num", "max_passes", "filtered_gen", "cancel", "queue_position", "scraped", "elapsed_seconds", "resume_filename", "location",
+               "ip_address", "user_country", "user_city", "user_region"}
             updates = {k: v for k, v in kwargs.items() if k in allowed}
             if not updates:
                 return
@@ -1991,20 +2093,21 @@ _IP_GEO_CACHE_TTL = 86400  # 24h
 
 
 def _resolve_ip_sync(ip: str) -> dict:
-    """Look up IP geolocation via ip-api.com. Returns {country, city, region}."""
+    """Look up IP geolocation via ip-api.com. Returns {country, country_code, city, region}."""
     if ip in ("127.0.0.1", "::1", "localhost", "unknown"):
-        return {"country": "Local", "city": "", "region": ""}
+        return {"country": "Local", "country_code": "", "city": "", "region": ""}
     cached = _ip_geo_cache.get(ip)
     if cached:
         return cached
     try:
-        resp = _requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,city,regionName",
+        resp = _requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,city,regionName",
                              timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("status") == "success":
                 result = {
                     "country": data.get("country", ""),
+                    "country_code": (data.get("countryCode") or "").lower(),
                     "city": data.get("city", ""),
                     "region": data.get("regionName", ""),
                 }
@@ -2012,7 +2115,7 @@ def _resolve_ip_sync(ip: str) -> dict:
                 return result
     except Exception:
         pass
-    return {"country": "", "city": "", "region": ""}
+    return {"country": "", "country_code": "", "city": "", "region": ""}
 
 
 def _store_geo(ip: str, visit_id: str):
@@ -2023,11 +2126,63 @@ def _store_geo(ip: str, visit_id: str):
             with _write_lock:
                 with _get_conn() as (conn2, cur2):
                     cur2.execute(
-                        "UPDATE visits SET country=?, city=?, region=? WHERE visit_id=?",
-                        (loc["country"], loc["city"], loc["region"], visit_id))
+                        "UPDATE visits SET country=?, country_code=?, city=?, region=? WHERE visit_id=?",
+                        (loc["country"], loc.get("country_code", ""), loc["city"], loc["region"], visit_id))
                     conn2.commit()
     except Exception:
         pass
+
+
+_country_name_to_code: dict = {}
+_COUNTRY_ALIASES = {
+    "usa": "us", "united states of america": "us", "united states": "us", "us": "us",
+    "russia": "ru", "vietnam": "vn", "south korea": "kr", "north korea": "kp",
+    "iran": "ir", "laos": "la", "myanmar (burma)": "mm", "myanmar": "mm",
+    "brunei": "bn", "syria": "sy", "venezuela": "ve", "bolivia": "bo",
+    "tanzania": "tz", "moldova": "md", "czechia": "cz", "czech republic": "cz",
+    "south sudan": "ss", "ivory coast": "ci", "abkhazia": "ge", "kosovo": "xk",
+    "congo (brazzaville)": "cg", "congo (kinshasa)": "cd",
+    "democratic republic of the congo": "cd", "republic of the congo": "cg",
+    "cabo verde": "cv", "cape verde": "cv", "east timor": "tl", "falkland islands": "fk",
+    "macedonia": "mk", "north macedonia": "mk", "palestinian territory": "ps",
+    "saint helena": "sh", "timor-leste": "tl", "zimbabwe": "zw",
+}
+
+
+def country_code_for_name(name: str) -> str:
+    """Best-effort ISO-2 code for an English country name (used to backfill old rows)."""
+    key = (name or "").strip().strip(".").lower()
+    if not key:
+        return ""
+    if not _country_name_to_code:
+        try:
+            from countrystatecity_countries import get_countries
+            for c in get_countries():
+                nk = (c.name or "").strip().strip(".").lower()
+                if nk:
+                    _country_name_to_code.setdefault(nk, c.iso2.lower())
+        except Exception:
+            pass
+        _country_name_to_code.update(_COUNTRY_ALIASES)
+    return _country_name_to_code.get(key, "")
+
+
+def backfill_visit_country_codes(limit: int = 0) -> int:
+    """Fill visits.country_code for rows captured before codes existed. Returns count updated."""
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            sql = "SELECT id, country, country_code FROM visits WHERE country_code = '' AND country != ''"
+            if limit:
+                sql += f" LIMIT {int(limit)}"
+            cur.execute(sql)
+            updates = 0
+            for r in cur.fetchall():
+                code = country_code_for_name(r["country"])
+                if code:
+                    cur.execute("UPDATE visits SET country_code = ? WHERE id = ?", (code, r["id"]))
+                    updates += 1
+            conn.commit()
+            return updates
 
 
 # ── Referral Requests ──

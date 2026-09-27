@@ -258,7 +258,7 @@ CACHE_MIN_VOLUME = 10                                     # min jobs for an entr
 CACHE_HOURS_OLD = 168                                     # posting window used by scrapers
 CACHE_PREWARM_LIMIT = 30                                  # prewarm fetch/store per combo
 CACHE_MAX_JOBS_PER_ENTRY = 500                            # live-search cache write cap
-CACHE_MAX_AGE_HOURS = 672                                 # delete cache rows older than 28 days
+CACHE_MAX_AGE_HOURS = 4320                                # delete cache rows older than 180 days
 CACHE_MAX_ENTRIES = 50000                                 # row-count safety cap
 
 CACHE_ROLES = ["Full Stack Developer", "Backend Developer", "Frontend Developer",

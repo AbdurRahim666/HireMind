@@ -10,6 +10,9 @@ server_log.txt
 * copy.*
 REFERRAL_MARKETPLACE.md
 backend/config.py
+*.db-shm
+*.db-wal
+jobawn-backup-*.zip
 
 backend/scrapers/linkedin_debug/
 
