@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.deps import get_current_user
-from db import get_candidate_profile, get_user, save_candidate_profile
+from db import get_candidate_profile, get_raw_jobs, get_session, get_user, save_candidate_profile
 from hiremind.config import hiremind_enabled
 from hiremind.profile_builder import PROFILE_VERSION, build_profile
 from hiremind.schemas import MatchRequest, ProfileRefreshRequest
@@ -21,6 +21,12 @@ _PROFILE_WINDOW = 60
 _MATCH_RATE = 30
 _MATCH_WINDOW = 60
 _MATCH_LIMIT = 200
+
+# Phase 3a: scoring an already-stored session. Offline and cheap, but a session
+# can be large, so cap the batch and the per-user call rate.
+_SEARCH_RATE = 6
+_SEARCH_WINDOW = 60
+_SEARCH_LIMIT = 300
 
 _RESUME_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "resumes")
 
@@ -99,3 +105,37 @@ async def hiremind_match(req: MatchRequest, request: Request = None,
     from hiremind.matcher import score_jobs
     jobs = score_jobs(row["profile"], req.jobs, min_score=req.min_score, limit=_MATCH_LIMIT)
     return {"ok": True, "email": email, "count": len(jobs), "jobs": jobs}
+
+
+@router.get("/search/{search_id}")
+async def hiremind_search_scores(search_id: str, request: Request = None,
+                                  user: dict = Depends(get_current_user)):
+    """Score the jobs already stored for one of the caller's own search sessions.
+
+    Read-only: nothing is persisted and no stored score is modified. Returns a
+    compact {url: {score, verdict, matched_role, matched_skills, reasons}} map
+    the client joins onto the job cards it is already rendering.
+    """
+    _enabled_or_404()
+    email = user["email"]
+    client_ip = get_client_ip(request)
+    if client_ip and not check_rate_limit(f"hiremind_search:{email}", _SEARCH_RATE, _SEARCH_WINDOW):
+        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+
+    session = get_session(search_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Search not found")
+    # Stricter than the unauthenticated /jobs route: a HireMind score is derived
+    # from the caller's own profile, so it may only be computed for their session.
+    owner = str(session.get("user_email") or "").strip().lower()
+    if owner != email.strip().lower():
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    row = get_candidate_profile(email)
+    if not row:
+        raise HTTPException(status_code=409, detail="No HireMind profile yet. Call POST /api/hiremind/profile/refresh first.")
+
+    from hiremind.ranker import score_for_urls
+    result = score_for_urls(row["profile"], get_raw_jobs(search_id), limit=_SEARCH_LIMIT)
+    return {"ok": True, "email": email, "search_id": search_id,
+            "version": row.get("version"), **result}
