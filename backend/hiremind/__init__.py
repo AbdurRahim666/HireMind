@@ -1,0 +1,1 @@
+# HireMind — additive candidate-profile layer on top of the existing JobAwn system.

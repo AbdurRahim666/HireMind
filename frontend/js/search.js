@@ -302,6 +302,12 @@ function jobCardHtml(j) {
     ? `<span class="text-[11px] bg-blue-50 text-blue-700 border border-blue-100/60 px-2.5 py-0.5 rounded-full font-bold shadow-sm">${_esc(j.job_level)}</span>`
     : "";
 
+  // HireMind: same ad already seen under a different board URL. Informational
+  // only — the card is never hidden, so existing behaviour is unchanged.
+  const dupBadge = j._seen_before
+    ? `<span class="text-[11px] bg-amber-50 text-amber-700 border border-amber-100/60 px-2.5 py-0.5 rounded-full font-bold shadow-sm" title="This posting was already seen on another job board">Seen before</span>`
+    : "";
+
   const companyHtml = j.company_url
     ? `<span class="font-bold text-slate-900 hover:text-brand-600 transition-colors cursor-pointer" data-company-url="${_esc(j.company_url)}" data-company-name="${_esc(j.company)}" onclick="event.preventDefault(); event.stopPropagation(); window.open(this.dataset.companyUrl, '_blank')">${_esc(j.company)}</span>`
     : `<span class="font-bold text-slate-900">${_esc(j.company)}</span>`;
@@ -362,7 +368,7 @@ function jobCardHtml(j) {
         <div class="flex-1 min-w-0">
           <div class="flex flex-wrap items-center gap-2 mb-1.5">
             <h3 class="text-base sm:text-lg font-extrabold text-slate-900 group-hover:text-brand-600 transition-colors truncate pr-1">${_esc(j.title)}</h3>
-            ${expBadge} ${levelBadge}
+            ${expBadge} ${levelBadge} ${dupBadge}
           </div>
           
           <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm font-medium text-slate-500">

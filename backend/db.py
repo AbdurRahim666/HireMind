@@ -338,6 +338,25 @@ def init_db():
                 deleted_at TEXT NOT NULL,
                 deleted_by TEXT DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS candidate_profiles (
+                user_email TEXT PRIMARY KEY,
+                resume_filename TEXT DEFAULT '',
+                parsed_text TEXT DEFAULT '',
+                profile_json TEXT DEFAULT '{}',
+                version INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_email) REFERENCES users(email)
+            );
+            CREATE TABLE IF NOT EXISTS known_jobs (
+                fingerprint TEXT PRIMARY KEY,
+                title TEXT DEFAULT '',
+                company TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                source TEXT DEFAULT '',
+                first_seen_at TEXT NOT NULL,
+                status TEXT DEFAULT 'active'
+            );
         """)
         # Create deleted_users index if missing
         try:
@@ -547,6 +566,18 @@ def init_db():
             pass
         try:
             cur.execute("ALTER TABLE jobs ADD COLUMN yoe_bucket TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE jobs ADD COLUMN fingerprint TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE jobs ADD COLUMN salary_norm TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE jobs ADD COLUMN seen_before INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass
         conn.commit()
@@ -1198,6 +1229,9 @@ def _job_to_row(sid: str, job: dict) -> dict:
         "company_url": job.get("company_url", ""),
         "job_level": job.get("job_level", ""),
         "yoe_bucket": job.get("yoe_bucket", ""),
+        "fingerprint": job.get("fingerprint", ""),
+        "salary_norm": job.get("salary_norm", ""),
+        "seen_before": 1 if job.get("_seen_before") else 0,
         "created_at": _now(),
     }
 
@@ -1209,8 +1243,8 @@ def set_filtered_jobs(sid: str, jobs: list):
             rows = [_job_to_row(sid, j) for j in jobs]
             if rows:
                 cur.executemany("""INSERT INTO jobs
-                    (session_id, title, company, location, url, description, tags, ai_score, keyword_score, total_score, reason, salary, experience_level, is_raw, date_posted, company_url, job_level, yoe_bucket, created_at)
-                    VALUES (:session_id, :title, :company, :location, :url, :description, :tags, :ai_score, :keyword_score, :total_score, :reason, :salary, :experience_level, :is_raw, :date_posted, :company_url, :job_level, :yoe_bucket, :created_at)""", rows)
+                    (session_id, title, company, location, url, description, tags, ai_score, keyword_score, total_score, reason, salary, experience_level, is_raw, date_posted, company_url, job_level, yoe_bucket, fingerprint, salary_norm, seen_before, created_at)
+                    VALUES (:session_id, :title, :company, :location, :url, :description, :tags, :ai_score, :keyword_score, :total_score, :reason, :salary, :experience_level, :is_raw, :date_posted, :company_url, :job_level, :yoe_bucket, :fingerprint, :salary_norm, :seen_before, :created_at)""", rows)
             conn.commit()
             _job_count_cache.pop(sid, None)
 
@@ -1220,8 +1254,8 @@ def add_filtered_job(sid: str, job: dict):
         with _get_conn() as (conn, cur):
             row = _job_to_row(sid, job)
             cur.execute("""INSERT INTO jobs
-                (session_id, title, company, location, url, description, tags, ai_score, keyword_score, total_score, reason, salary, experience_level, is_raw, date_posted, company_url, job_level, yoe_bucket, created_at)
-                VALUES (:session_id, :title, :company, :location, :url, :description, :tags, :ai_score, :keyword_score, :total_score, :reason, :salary, :experience_level, :is_raw, :date_posted, :company_url, :job_level, :yoe_bucket, :created_at)""", row)
+                (session_id, title, company, location, url, description, tags, ai_score, keyword_score, total_score, reason, salary, experience_level, is_raw, date_posted, company_url, job_level, yoe_bucket, fingerprint, salary_norm, seen_before, created_at)
+                VALUES (:session_id, :title, :company, :location, :url, :description, :tags, :ai_score, :keyword_score, :total_score, :reason, :salary, :experience_level, :is_raw, :date_posted, :company_url, :job_level, :yoe_bucket, :fingerprint, :salary_norm, :seen_before, :created_at)""", row)
             conn.commit()
             _job_count_cache.pop(sid, None)
 
@@ -1269,6 +1303,8 @@ def get_filtered_jobs(sid: str, min_score: int = 0, site: str = "", experience_l
             del d["created_at"]
             if "matched_role" in d:
                 d["_matched_role"] = d.pop("matched_role")
+            if "seen_before" in d:
+                d["_seen_before"] = bool(d.pop("seen_before"))
             jobs.append(d)
         return jobs
 
@@ -1298,6 +1334,9 @@ def set_raw_jobs(sid: str, jobs: list):
                     "company_url": job.get("company_url", ""),
                     "job_level": job.get("job_level", ""),
                     "yoe_bucket": job.get("yoe_bucket", ""),
+                    "fingerprint": job.get("fingerprint", ""),
+                    "salary_norm": job.get("salary_norm", ""),
+                    "seen_before": 1 if job.get("_seen_before") else 0,
                     "matched_role": job.get("_matched_role", ""),
                     "created_at": _now(),
                 })
@@ -1305,10 +1344,10 @@ def set_raw_jobs(sid: str, jobs: list):
                 cur.executemany("""INSERT INTO jobs
                     (session_id, title, company, location, url, description, tags,
                      ai_score, keyword_score, total_score, reason, salary,
-                     experience_level, is_raw, date_posted, company_url, job_level, yoe_bucket, matched_role, created_at)
+                     experience_level, is_raw, date_posted, company_url, job_level, yoe_bucket, fingerprint, salary_norm, seen_before, matched_role, created_at)
                     VALUES (:session_id, :title, :company, :location, :url, :description, :tags,
                             :ai_score, :keyword_score, :total_score, :reason, :salary,
-                            :experience_level, :is_raw, :date_posted, :company_url, :job_level, :yoe_bucket, :matched_role, :created_at)""", rows)
+                            :experience_level, :is_raw, :date_posted, :company_url, :job_level, :yoe_bucket, :fingerprint, :salary_norm, :seen_before, :matched_role, :created_at)""", rows)
             conn.commit()
 
 
@@ -1332,6 +1371,8 @@ def get_raw_jobs(sid: str) -> list[dict]:
             del d["created_at"]
             if "matched_role" in d:
                 d["_matched_role"] = d.pop("matched_role")
+            if "seen_before" in d:
+                d["_seen_before"] = bool(d.pop("seen_before"))
             jobs.append(d)
         return jobs
 
@@ -2530,3 +2571,130 @@ def proxy_pool_stats(board: str) -> dict:
         counts = {r["status"]: r["c"] for r in cur.fetchall()}
     return {"board": board, "free": counts.get("free", 0),
             "in_use": counts.get("in_use", 0), "dead": counts.get("dead", 0)}
+
+
+def get_candidate_profile(email: str) -> Optional[dict]:
+    """Fetch a user's HireMind candidate profile (profile JSON decoded)."""
+    if not email:
+        return None
+    with _get_conn() as (conn, cur):
+        cur.execute("SELECT * FROM candidate_profiles WHERE user_email = ?", (email,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["profile"] = json.loads(d.get("profile_json") or "{}")
+        except (ValueError, TypeError):
+            d["profile"] = {}
+        return d
+
+
+def save_candidate_profile(email: str, resume_filename: str = "", parsed_text: str = "",
+                           profile_json: dict = None, version: int = 1) -> dict:
+    """Insert or refresh a user's HireMind candidate profile (idempotent upsert)."""
+    profile_json = profile_json or {}
+    now = _now()
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            cur.execute(
+                """
+                INSERT INTO candidate_profiles
+                    (user_email, resume_filename, parsed_text, profile_json, version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_email) DO UPDATE SET
+                    resume_filename = excluded.resume_filename,
+                    parsed_text = excluded.parsed_text,
+                    profile_json = excluded.profile_json,
+                    version = excluded.version,
+                    updated_at = excluded.updated_at
+                """,
+                (email, resume_filename, parsed_text, json.dumps(profile_json), version, now, now),
+            )
+            conn.commit()
+    return {"user_email": email, "resume_filename": resume_filename,
+            "profile": profile_json, "version": version, "updated_at": now}
+
+
+# ── HireMind known-jobs registry (realized only when HireMind is on) ──
+
+def record_known_job(fingerprint: str, title: str = "", company: str = "",
+                     url: str = "", source: str = "") -> bool:
+    """Record one fingerprint in known_jobs. Returns True if it was new."""
+    if not fingerprint:
+        return False
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            cur.execute(
+                "INSERT OR IGNORE INTO known_jobs "
+                "(fingerprint, title, company, url, source, first_seen_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'active')",
+                (fingerprint, title, company, url, source, _now()),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+
+def record_known_jobs_bulk(rows: list) -> int:
+    """Record many fingerprints in one write. Returns rows changed."""
+    if not rows:
+        return 0
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            now = _now()
+            cur.executemany(
+                "INSERT OR IGNORE INTO known_jobs "
+                "(fingerprint, title, company, url, source, first_seen_at, status) "
+                "VALUES (:fingerprint, :title, :company, :url, :source, :first_seen_at, 'active')",
+                [{**r, "first_seen_at": now} for r in rows],
+            )
+            conn.commit()
+            return cur.rowcount
+
+
+def known_job_seen(fingerprint: str) -> bool:
+    if not fingerprint:
+        return False
+    with _get_conn() as (conn, cur):
+        cur.execute("SELECT 1 FROM known_jobs WHERE fingerprint = ?", (fingerprint,))
+        return cur.fetchone() is not None
+
+
+def known_jobs_seen(fingerprints: list) -> set:
+    """Return the subset of `fingerprints` that already exist in known_jobs."""
+    fps = [f for f in set(fingerprints or []) if f]
+    if not fps:
+        return set()
+    placeholders = ",".join("?" * len(fps))
+    with _get_conn() as (conn, cur):
+        cur.execute(f"SELECT fingerprint FROM known_jobs WHERE fingerprint IN ({placeholders})", fps)
+        return {row[0] for row in cur.fetchall()}
+
+
+def known_jobs_stats() -> dict:
+    with _get_conn() as (conn, cur):
+        cur.execute("SELECT COUNT(*) FROM known_jobs")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT source) FROM known_jobs WHERE source != ''")
+        sources = cur.fetchone()[0]
+    return {"count": total, "sources": sources}
+
+
+def known_jobs_source_breakdown() -> list:
+    """Per-source counts in the known-jobs registry, busiest first."""
+    with _get_conn() as (conn, cur):
+        cur.execute(
+            "SELECT source, COUNT(*) AS c, MAX(first_seen_at) AS last_seen_at "
+            "FROM known_jobs GROUP BY source ORDER BY c DESC"
+        )
+        return [{"source": r["source"], "count": r["c"], "last_seen_at": r["last_seen_at"]}
+                for r in cur.fetchall()]
+
+
+def clear_known_jobs() -> int:
+    """Wipe the registry (admin/debug). Returns rows deleted."""
+    with _write_lock:
+        with _get_conn() as (conn, cur):
+            cur.execute("DELETE FROM known_jobs")
+            conn.commit()
+            return cur.rowcount

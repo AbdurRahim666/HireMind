@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from api.routes import jobs, scrape, resume, roles, states, cities, events, leads, admin, auth, profile, saved_jobs, visits, users, referrals, stats, joblink, landing
+from api.routes import jobs, scrape, resume, roles, states, cities, events, leads, admin, auth, profile, saved_jobs, visits, users, referrals, stats, joblink, landing, hiremind
 import json
 from db import init_db
 from config import JWT_ALLOW_DEV_SECRET
@@ -229,6 +229,7 @@ app.include_router(referrals.router)
 app.include_router(joblink.router)
 app.include_router(stats.router)
 app.include_router(landing.router)
+app.include_router(hiremind.router)
 
 
 @app.get("/votes")

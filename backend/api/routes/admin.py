@@ -777,6 +777,30 @@ async def get_cache_stats(used: bool = True):
     return {"sites": sites, "total_entries": total["e"] or 0, "total_jobs": total["j"] or 0, "rows": rows}
 
 
+@router.get("/hiremind/known-jobs")
+async def admin_hiremind_known_jobs(user: dict = Depends(get_current_user)):
+    """HireMind known-jobs registry summary. 404 while the feature flag is off."""
+    from hiremind.config import hiremind_enabled
+    if not hiremind_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    _check_admin(user["email"])
+    from db import known_jobs_source_breakdown
+    from hiremind.dedup import known_jobs_stats
+    stats = known_jobs_stats()
+    return {**stats, "by_source": known_jobs_source_breakdown()}
+
+
+@router.delete("/hiremind/known-jobs")
+async def admin_hiremind_clear_known_jobs(user: dict = Depends(get_current_user)):
+    """Wipe the known-jobs registry so the next scrape re-seeds it."""
+    from hiremind.config import hiremind_enabled
+    if not hiremind_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    _check_admin(user["email"])
+    from db import clear_known_jobs
+    return {"ok": True, "cleared": clear_known_jobs()}
+
+
 @router.delete("/prewarm/custom")
 async def delete_custom_prewarm(
     role: str = "", site: str = "", city: str = "",

@@ -314,6 +314,16 @@ def _scrape_combos(sid, combos, keywords=None, internship_mode=False, hours_old=
                 if not filtered:
                     continue
 
+                # HireMind (gated, Phase 2): fingerprint + salary-normalize each
+                # job, flag cross-board duplicates via the known-jobs registry,
+                # and record them. No-op when HireMind is disabled; never drops
+                # a job.
+                try:
+                    from hiremind.dedup import dedup_tag_jobs as _dedup_tag_jobs
+                    _dedup_tag_jobs(filtered, source=site_key)
+                except Exception as e:
+                    log(f"[SCRAPE] HireMind dedup skipped: {e}", sid)
+
                 combo_jobs.extend(filtered)
 
                 # Dedup against accumulated jobs
