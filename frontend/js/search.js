@@ -368,7 +368,7 @@ function jobCardHtml(j) {
         <div class="flex-1 min-w-0">
           <div class="flex flex-wrap items-center gap-2 mb-1.5">
             <h3 class="text-base sm:text-lg font-extrabold text-slate-900 group-hover:text-brand-600 transition-colors truncate pr-1">${_esc(j.title)}</h3>
-            ${expBadge} ${levelBadge} ${dupBadge}
+            ${expBadge} ${levelBadge} ${dupBadge} ${window.HireMind ? window.HireMind.badgeHtml(j) : ""}
           </div>
           
           <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm font-medium text-slate-500">
@@ -996,6 +996,7 @@ function clearSearchState() {
   _activeLevelFilter = 'all';
   _activeBoardFilters.clear();
   _activeYoeFilters.clear();
+  if (window.HireMind) window.HireMind.reset();
   document.getElementById("results").innerHTML = `
     <div class="premium-card min-h-[400px] flex flex-col items-center justify-center text-center p-8">
       <div class="w-16 h-16 rounded-2xl bg-slate-50 flex items-center justify-center mb-5 border border-slate-100">
@@ -1698,6 +1699,9 @@ function pollAllScrapes() {
       }
     } else {
       await checkSavedStatuses();
+      // HireMind Fit overlay (Phase 3b): resolved before rendering so the badge
+      // is in the first paint. No-op when signed out, flag off, or no profile.
+      if (window.HireMind) await window.HireMind.load(sid);
       if (_customRoleList.length > 0 && _aiRoleList.length > 0) {
         showTabBar();
         switchTab('custom');
@@ -1774,6 +1778,10 @@ function renderAllJobs(jobs) {
     });
   } else if (currentSort === 'referral') {
     displayJobs = [...displayJobs].sort((a, b) => (_referralCounts[b.company] || 0) - (_referralCounts[a.company] || 0));
+  } else if (currentSort === 'hiremind' && window.HireMind) {
+    // HireMind Fit — additive sort only. Unscored jobs sink to the bottom;
+    // nothing is filtered out and no JobAwn score is consulted.
+    displayJobs = [...displayJobs].sort((a, b) => window.HireMind.scoreOf(b) - window.HireMind.scoreOf(a));
   } else {
     displayJobs = [...displayJobs].sort((a, b) => (b.keyword_score || 0) - (a.keyword_score || 0));
   }
@@ -1861,6 +1869,7 @@ function renderAllJobs(jobs) {
       <option value="relevant" ${currentSort === 'relevant' ? 'selected' : ''}>Most Relevant</option>
       <option value="recent" ${currentSort === 'recent' ? 'selected' : ''}>Most Recent</option>
       <option value="referral" ${currentSort === 'referral' ? 'selected' : ''}>Most Referrals</option>
+      ${(window.HireMind && window.HireMind.hasScores()) ? `<option value="hiremind" ${currentSort === 'hiremind' ? 'selected' : ''}>HireMind Fit</option>` : ''}
     </select></span></span>
   </div>`;
   const roleScope = _activeSubFilterRole !== 'all' ? yoeScope.filter(j => j._matched_role === _activeSubFilterRole) : yoeScope;
@@ -2199,6 +2208,8 @@ document.addEventListener('click', (e) => {
 
         customJobs = allJobs.filter(j => _customRoleList.includes(j._matched_role));
         aiJobs = allJobs.filter(j => _aiRoleList.includes(j._matched_role));
+
+        if (window.HireMind) await window.HireMind.load(sid);
 
         showElement("results");
         if (_customRoleList.length > 0 && _aiRoleList.length > 0) {
